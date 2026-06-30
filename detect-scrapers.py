@@ -247,7 +247,9 @@ def main():
         ip=args.unban
         if args.enforce:
             remove_ban_rule(ip); audit(args.audit,"UNBAN %s (manual)"%ip)
-        state["bans"].pop(ip,None); save_state(args.state,state)
+        state["bans"].pop(ip,None)
+        state["tracked"].pop(ip,None)  # forget accumulated evidence so the cron doesn't immediately re-ban
+        save_state(args.state,state)
         print("Unbanned %s%s"%(ip,"" if args.enforce else " (state only; pass --enforce to drop the firewall rule)"))
         return 0
     if args.ban:
