@@ -18,17 +18,34 @@ drops the firewall on the ones that keep at it.
 
 ## How it detects scrapers
 
-Each run classifies every client IP from the access log. The fingerprints are
-things a real browser never does:
+Each run classifies every client IP from the access log.
+
+**Hard signals** — things a real browser *never* does — always flag, regardless of
+User-Agent:
+
+| Verdict | Hard signal | Auto-ban? |
+|---|---|---|
+| `WS-SCRAPER` | Forged **duplicate `Origin`** header, **or** a WebSocket reconnect **hot-loop** (≥ `WS_HOTLOOP` upgrades) | ✅ |
+| `BOT-UA` | Non-browser User-Agent (`python-requests`, `curl`, `Go-http-client`, `scrapy`, `aiohttp`, `httpx`, `wget`, …) | ✅ |
+
+**Behavioural fingerprints** — applied **only to clients that do not present a genuine
+browser User-Agent** (missing/odd UA):
 
 | Verdict | Signature | Auto-ban? |
 |---|---|---|
-| `WS-SCRAPER` | Pure WebSocket feed puller (opens `/ws`, never loads the page or polls the API), **or** sends a forged duplicate `Origin` header | ✅ (unambiguous) |
-| `BOT-UA` | Non-browser User-Agent (`python-requests`, `curl`, `Go-http-client`, `scrapy`, `aiohttp`, `httpx`, `wget`, …) | ✅ (unambiguous) |
+| `WS-SCRAPER` | Pure WebSocket feed puller (opens `/ws`, never loads the page or polls the API) | ✅ |
 | `REST-HARVESTER` | Zero page loads, zero WS, but repeatedly pulls the bulk dataset (node list / observers / region config / clock-skew) | ⚠️ only with `--ban-harvesters` |
 
-Real users (browsers that load assets, or just poll a stats endpoint) are **not**
-flagged.
+### Real browsers are trusted (v1.1)
+
+A client that sends a **real browser User-Agent** (`Mozilla/5.0` + a rendering engine)
+is treated as a real user **even when it shows "no page loads"** — a tab left open for
+hours has its assets cached, so missing asset fetches is *not* evidence of scraping.
+This is the fix for v1 falsely banning real Firefox users who left dashboard tabs open.
+Header-spoofing scrapers that fake a browser UA are still caught by the hard signals
+(duplicate `Origin` / hot-loop); the accepted trade-off is that a scraper which fully
+mimics a browser (real UA, single Origin, modest rate) is indistinguishable from a real
+user and won't be auto-banned — use the allowlist/manual `--ban` for those edge cases.
 
 ## How it decides to ban (confidence by persistence)
 

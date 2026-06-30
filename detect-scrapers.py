@@ -42,6 +42,14 @@ import sys, os, json, re, subprocess, socket, argparse, datetime
 NONBROWSER = re.compile(r"(?i)\b(python-requests|aiohttp|httpx|go-http-client|okhttp|"
                         r"scrapy|libwww-perl|java|node-fetch|axios|wget|curl|got|"
                         r"http\.rb|guzzle|postman|insomnia|restsharp)\b")
+# A genuine browser User-Agent: Mozilla/5.0 plus a real rendering-engine token.
+# We TRUST these as real users: a long-open browser tab caches its assets, so
+# "no page loads in this window" is NOT evidence of a scraper. (This is what
+# falsely banned real Firefox users in v1.) Header-spoofing scrapers that fake a
+# browser UA are still caught by the hard signals below — duplicate Origin or a
+# WS reconnect hot-loop — an accepted trade-off to never ban a real browser.
+BROWSER = re.compile(r"(?i)Mozilla/5\.0.*(Gecko|AppleWebKit|Trident)")
+WS_HOTLOOP = 500  # WS upgrades in one window above which even a browser UA is treated as a scripted hot-loop
 # Verdicts considered unambiguous enough to auto-ban (no real browser does these)
 UNAMBIGUOUS = {"WS-SCRAPER", "BOT-UA"}
 DOCKER_CHAIN = "DOCKER-USER"
@@ -101,15 +109,33 @@ def analyze(text):
     return clients, span
 
 def verdict(c):
-    """(label, confidence, reason) or None for a real user."""
+    """(label, confidence, reason) or None for a likely-real user.
+
+    HARD signals (a real browser never produces these) always flag, regardless of
+    User-Agent: a forged duplicate Origin header, a non-browser User-Agent, or an
+    absurd WebSocket reconnect hot-loop.
+
+    Otherwise, if the client presents a GENUINE browser User-Agent we treat it as a
+    real user even when it shows "no page loads" — a long-open tab caches its assets,
+    so missing asset fetches is not evidence of scraping. The pure-WS / REST-harvester
+    behavioural fingerprints therefore only apply to clients that do NOT look like a
+    browser (missing/odd UA). This is the v1.1 fix for falsely banning real browsers.
+    """
     ua = max(c.ua, key=c.ua.get) if c.ua else ""
+    # --- Hard signals: always a scraper, even with a spoofed browser UA ---
     if c.dup > 0:
         return ("WS-SCRAPER","HIGH","forged duplicate Origin header x%d" % c.dup)
-    mua = NONBROWSER.search(ua)
-    if mua:
-        return ("BOT-UA","HIGH","non-browser User-Agent (%s)" % mua.group(0))
+    m = NONBROWSER.search(ua)
+    if m:
+        return ("BOT-UA","HIGH","non-browser User-Agent (%s)" % m.group(0))
+    if c.ws >= WS_HOTLOOP and c.assets == 0:
+        return ("WS-SCRAPER","HIGH","WebSocket reconnect hot-loop (%d upgrades, no page load)" % c.ws)
+    # --- A real browser presentation is trusted (cached tabs show no fresh page loads) ---
+    if BROWSER.search(ua):
+        return None
+    # --- No browser UA and no hard signal: apply the behavioural fingerprints ---
     if c.ws > 0 and c.api == 0 and c.assets == 0:
-        return ("WS-SCRAPER","HIGH","pure WebSocket feed puller (%d upgrades, no page load)" % c.ws)
+        return ("WS-SCRAPER","HIGH","pure WebSocket feed puller, no browser UA (%d upgrades, no page load)" % c.ws)
     if c.assets == 0 and c.ws == 0:
         nodes=c.ep.get("/api/nodes",0)+c.ep.get("/api/nodes/<id>",0)
         regions=c.ep.get("/api/config/regions",0)
@@ -121,7 +147,7 @@ def verdict(c):
         if obs>=20:     hits.append("observers x%d"%obs)
         if skew>=40:    hits.append("clock-skew x%d"%skew)
         if hits:
-            return ("REST-HARVESTER","HIGH","no page load, no WS; harvests "+", ".join(hits))
+            return ("REST-HARVESTER","HIGH","no page load, no WS, no browser UA; harvests "+", ".join(hits))
     return None
 
 def rdns(ip):
