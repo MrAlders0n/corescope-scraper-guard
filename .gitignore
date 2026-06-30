@@ -1,0 +1,9 @@
+# Runtime state / data — NEVER commit (contains live IPs, ban history, scan output)
+.scraper-state.json
+.scraper-allowlist
+scraper-bans.log
+scraper-scans.log
+
+# Python
+__pycache__/
+*.pyc
